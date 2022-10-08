@@ -1,6 +1,10 @@
 |PyPI Version| |Conda Version| |License| |Azure CI Build Status|
 |Codecov Coverage| |Coveralls Coverage| |PyPI downloads| |Conda downloads|
 
+FORK UPDATE:
+- Implemented fit_regularized method for VAR time-series model.
+- Currenly only supports Ridge/L2-regularization due to ease of implementation and existence of closed-form solution (attained by appending the "regularization matrix" to inputs and endogs matrices).
+
 About statsmodels
 =================
 

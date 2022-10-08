@@ -652,6 +652,7 @@ class VAR(TimeSeriesModel):
         See Lütkepohl pp. 146-153 for implementation details.
         """
         lags = maxlags
+        trend = tsa.rename_trend(trend)
         if trend not in ["c", "ct", "ctt", "n"]:
             raise ValueError("trend '{}' not supported for VAR".format(trend))
 
@@ -693,8 +694,103 @@ class VAR(TimeSeriesModel):
             (self.data.xnames, self.data.ynames)
         )
         return self._estimate_var(lags, trend=trend)
+    
+    def fit_regularized(
+        self,
+        maxlags: int | None = None,
+        method="ridge",
+        ic=None,
+        trend="c",
+        verbose=False,
+        lambda_ = 0
+    ):
+        # todo: this code is only supporting deterministic terms as exog.
+        # This means that all exog-variables have lag 0. If dealing with
+        # different exogs is necessary, a `lags_exog`-parameter might make
+        # sense (e.g. a sequence of ints specifying lags).
+        # Alternatively, leading zeros for exog-variables with smaller number
+        # of lags than the maximum number of exog-lags might work.
+        """
+        Fit the L2-regularized VAR model
 
-    def _estimate_var(self, lags, offset=0, trend="c"):
+        Parameters
+        ----------
+        maxlags : {int, None}, default None
+            Maximum number of lags to check for order selection, defaults to
+            12 * (nobs/100.)**(1./4), see select_order function
+        method : {'ridge'}
+            Estimation method to use
+        ic : {'aic', 'fpe', 'hqic', 'bic', None}
+            Information criterion to use for VAR order selection.
+            aic : Akaike
+            fpe : Final prediction error
+            hqic : Hannan-Quinn
+            bic : Bayesian a.k.a. Schwarz
+        verbose : bool, default False
+            Print order selection output to the screen
+        trend : str {"c", "ct", "ctt", "n"}
+            "c" - add constant
+            "ct" - constant and trend
+            "ctt" - constant, linear and quadratic trend
+            "n" - co constant, no trend
+            Note that these are prepended to the columns of the dataset.
+        lambda_: float, default 0
+            Strength of regularization parameter in ridge regression.
+            
+        Returns
+        -------
+        VARResults
+            Estimation results
+
+        Notes
+        -----
+        See Lütkepohl pp. 146-153 for implementation details.
+        """
+        lags = maxlags
+        trend = tsa.rename_trend(trend)
+        if trend not in ["c", "ct", "ctt", "n"]:
+            raise ValueError("trend '{}' not supported for VAR".format(trend))
+
+        if ic is not None:
+            selections = self.select_order(maxlags=maxlags)
+            if not hasattr(selections, ic):
+                raise ValueError(
+                    "%s not recognized, must be among %s"
+                    % (ic, sorted(selections))
+                )
+            lags = getattr(selections, ic)
+            if verbose:
+                print(selections)
+                print("Using %d based on %s criterion" % (lags, ic))
+        else:
+            if lags is None:
+                lags = 1
+
+        k_trend = util.get_trendorder(trend)
+        orig_exog_names = self.exog_names
+        self.exog_names = util.make_lag_names(self.endog_names, lags, k_trend)
+        self.nobs = self.n_totobs - lags
+
+        # add exog to data.xnames (necessary because the length of xnames also
+        # determines the allowed size of VARResults.params)
+        if self.exog is not None:
+            if orig_exog_names:
+                x_names_to_add = orig_exog_names
+            else:
+                x_names_to_add = [
+                    ("exog%d" % i) for i in range(self.exog.shape[1])
+                ]
+            self.data.xnames = (
+                self.data.xnames[:k_trend]
+                + x_names_to_add
+                + self.data.xnames[k_trend:]
+            )
+        self.data.cov_names = pd.MultiIndex.from_product(
+            (self.data.xnames, self.data.ynames)
+        )
+        return self._estimate_var(lags, trend=trend, lambda_=lambda_, method=method)
+
+    def _estimate_var(self, lags, offset=0, trend="c", lambda_=None, method='ols'):
         """
         lags : int
             Lags of the endogenous variable.
@@ -740,7 +836,10 @@ class VAR(TimeSeriesModel):
 
         y_sample = endog[lags:]
         # Lütkepohl p75, about 5x faster than stated formula
-        params = np.linalg.lstsq(z, y_sample, rcond=1e-15)[0]
+        if method=='ridge' and lambda_:
+            params = np.linalg.lstsq(np.vstack([z,np.sqrt(lambda_)*np.identity(z.shape[1])]), np.vstack([y_sample,np.zeros((z.shape[1],y_sample.shape[1]))]), rcond=1e-15)[0]
+        else:
+            params = np.linalg.lstsq(z, y_sample, rcond=1e-15)[0]
         resid = y_sample - np.dot(z, params)
 
         # Unbiased estimate of covariance matrix $\Sigma_u$ of the white noise
@@ -795,6 +894,7 @@ class VAR(TimeSeriesModel):
         -------
         selections : LagOrderResults
         """
+        trend = tsa.rename_trend(trend)
         ntrend = len(trend) if trend.startswith("c") else 0
         max_estimable = (self.n_totobs - self.neqs - ntrend) // (1 + self.neqs)
         if maxlags is None:
@@ -840,7 +940,7 @@ class VAR(TimeSeriesModel):
         raise NotImplementedError("formulas are not supported for VAR models.")
 
 
-class VARProcess:
+class VARProcess(object):
     """
     Class represents a known VAR(p) process
 
@@ -921,7 +1021,7 @@ class VARProcess:
         """
         return is_stable(self.coefs, verbose=verbose)
 
-    def simulate_var(self, steps=None, offset=None, seed=None, initial_values=None, nsimulations=None):
+    def simulate_var(self, steps=None, offset=None, seed=None):
         """
         simulate the VAR(p) process for the desired number of steps
 
@@ -942,21 +1042,11 @@ class VARProcess:
         seed : {None, int}
             If seed is not None, then it will be used with for the random
             variables generated by numpy.random.
-        initial_values : array_like, optional
-            Initial values for use in the simulation. Shape should be
-            (nlags, neqs) or (neqs,). Values should be ordered from less to
-            most recent. Note that this values will be returned by the
-            simulation as the first values of `endog_simulated` and they
-            will count for the total number of steps.
-        nsimulations : {None, int}
-            Number of simulations to perform. If `nsimulations` is None it will
-            perform one simulation and return value will have shape (steps, neqs).
 
         Returns
         -------
         endog_simulated : nd_array
-            Endog of the simulated VAR process. Shape will be (nsimulations, steps, neqs)
-            or (steps, neqs) if `nsimulations` is None.
+            Endog of the simulated VAR process
         """
         steps_ = None
         if offset is None:
@@ -987,13 +1077,7 @@ class VARProcess:
                 )
 
         y = util.varsim(
-            self.coefs,
-            offset,
-            self.sigma_u,
-            steps=steps,
-            seed=seed,
-            initial_values=initial_values,
-            nsimulations=nsimulations
+            self.coefs, offset, self.sigma_u, steps=steps, seed=seed
         )
         return y
 
@@ -1663,7 +1747,6 @@ class VARResults(VARProcess):
                 warnings.warn(
                     "forecast cov takes parameter uncertainty into" "account",
                     OutputWarning,
-                    stacklevel = 2,
                 )
         else:
             raise ValueError("method has to be either 'mse' or 'auto'")
@@ -2368,7 +2451,7 @@ class VARResultsWrapper(wrap.ResultsWrapper):
 wrap.populate_wrapper(VARResultsWrapper, VARResults)  # noqa:E305
 
 
-class FEVD:
+class FEVD(object):
     """
     Compute and plot Forecast error variance decomposition and asymptotic
     standard errors
