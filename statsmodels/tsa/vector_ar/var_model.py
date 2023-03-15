@@ -746,7 +746,6 @@ class VAR(TimeSeriesModel):
         See Lütkepohl pp. 146-153 for implementation details.
         """
         lags = maxlags
-        trend = tsa.rename_trend(trend)
         if trend not in ["c", "ct", "ctt", "n"]:
             raise ValueError("trend '{}' not supported for VAR".format(trend))
 
