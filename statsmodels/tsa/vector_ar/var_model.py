@@ -788,7 +788,7 @@ class VAR(TimeSeriesModel):
         )
         return self._estimate_var(lags, trend=trend, lambda_=lambda_, method=method)
 
-    def _estimate_var(self, lags, offset=0, trend="c"):
+    def _estimate_var(self, lags, offset=0, trend="c", lambda_=None, method='ols'):
         """
         lags : int
             Lags of the endogenous variable.
@@ -872,6 +872,7 @@ class VAR(TimeSeriesModel):
             dates=self.data.dates,
             model=self,
             exog=self.exog,
+            fit_method=method
         )
         return VARResultsWrapper(varfit)
 
@@ -1432,6 +1433,7 @@ class VARResults(VARProcess):
         names=None,
         dates=None,
         exog=None,
+        fit_method='ols'
     ):
 
         self.model = model
@@ -1448,6 +1450,8 @@ class VARResults(VARProcess):
         )
         self.params = params
         self.exog = exog
+        
+        self.fit_method = fit_method
 
         # Initialize VARProcess parent class
         # construct coefficient matrices
